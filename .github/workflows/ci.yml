@@ -156,7 +156,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
       - name: Trivy – escaneo de vulnerabilidades (falla con CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: taskflow-${{ matrix.component }}:ci
           severity: CRITICAL
@@ -165,7 +165,7 @@ jobs:
           format: table
       - name: Trivy – reporte completo (HIGH/CRITICAL, informativo)
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: taskflow-${{ matrix.component }}:ci
           severity: HIGH,CRITICAL
@@ -206,13 +206,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Semantic release (Conventional Commits)
         id: semrel
-        uses: cycjimmy/semantic-release-action@v4
-        with:
-          extra_plugins: conventional-changelog-conventionalcommits@8
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx --yes -p semantic-release@24 -p conventional-changelog-conventionalcommits@8 semantic-release
+          # ¿Se creó un tag nuevo sobre este commit?
+          git fetch --tags --force
+          TAG="$(git tag --points-at HEAD | grep '^v' | sort -V | tail -1 || true)"
+          if [ -n "$TAG" ]; then
+            echo "new_release_published=true" >> "$GITHUB_OUTPUT"
+            echo "new_release_version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_release_published=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Calcular versión e imágenes
         id: version
