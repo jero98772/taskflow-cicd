@@ -1,0 +1,15 @@
+# Service "router" del blue/green: el selector `color` decide qué versión recibe tráfico.
+# Lo crea scripts/deploy.sh sólo si no existe (para no pisar el color activo).
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels: { app: taskflow, component: api }
+  annotations:
+    taskflow/active-color: blue
+    taskflow/previous-color: ""
+spec:
+  selector: { app: taskflow, component: api, color: blue }
+  ports:
+    - port: 8000
+      targetPort: 8000

@@ -1,0 +1,11 @@
+# Volumen compartido por api-blue y api-green (SQLite) para que los datos
+# sobrevivan al cambio de color y al rollback.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: api-data
+  labels: { app: taskflow, component: api }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 256Mi }

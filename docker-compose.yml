@@ -1,0 +1,14 @@
+# Desarrollo local: http://localhost:8090
+services:
+  api:
+    build: ./api
+    environment:
+      APP_VERSION: dev
+      APP_ENV: local
+    volumes: [api-data:/data]
+  frontend:
+    build: ./frontend
+    ports: ["8090:8080"]
+    depends_on: [api]
+volumes:
+  api-data:

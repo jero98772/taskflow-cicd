@@ -1,0 +1,45 @@
+# Plantilla renderizada por scripts/deploy.sh (envsubst) para cada color.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-${COLOR}
+  labels: { app: taskflow, component: api, color: "${COLOR}" }
+  annotations:
+    taskflow/version: "${VERSION}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: taskflow, component: api, color: "${COLOR}" }
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels: { app: taskflow, component: api, color: "${COLOR}" }
+    spec:
+      securityContext: { runAsNonRoot: true, fsGroup: 10001 }
+      containers:
+        - name: api
+          image: ${IMAGE}
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8000 }]
+          envFrom:
+            - configMapRef: { name: taskflow-config }
+          env:
+            - { name: APP_VERSION, value: "${VERSION}" }
+            - { name: APP_COLOR, value: "${COLOR}" }
+            - { name: DATABASE_URL, value: "sqlite:////data/taskflow.db" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: api-data }
