@@ -1,0 +1,33 @@
+name: Notify
+description: Envía una notificación a Discord/Slack (webhook). Si no hay webhook configurado, sólo escribe el resumen.
+inputs:
+  webhook:
+    description: URL del webhook (secret DISCORD_WEBHOOK)
+    required: false
+    default: ""
+  title:
+    required: true
+  message:
+    required: true
+  status:
+    description: success | failure | warning
+    required: false
+    default: success
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        WEBHOOK: ${{ inputs.webhook }}
+        TITLE: ${{ inputs.title }}
+        MESSAGE: ${{ inputs.message }}
+        STATUS: ${{ inputs.status }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        case "$STATUS" in success) ICON="✅"; COLOR=3066993 ;; failure) ICON="🚨"; COLOR=15158332 ;; *) ICON="⚠️"; COLOR=15844367 ;; esac
+        echo "### $ICON $TITLE" >> "$GITHUB_STEP_SUMMARY"
+        echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+        if [ -z "$WEBHOOK" ]; then echo "Sin webhook configurado: notificación omitida"; exit 0; fi
+        payload=$(jq -n --arg t "$ICON $TITLE" --arg d "$MESSAGE" --arg u "$RUN_URL" --argjson c "$COLOR" \
+          '{embeds:[{title:$t, description:$d, url:$u, color:$c}]}')
+        curl -fsS -H 'Content-Type: application/json' -d "$payload" "$WEBHOOK" || echo "No se pudo notificar"

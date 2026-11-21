@@ -1,0 +1,46 @@
+name: Rollback manual (botón de pánico)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente a revertir
+        type: choice
+        options: [production, staging]
+        default: production
+      reason:
+        description: Motivo del rollback
+        required: true
+        default: "Incidente reportado"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-taskflow
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: 🚨 Rollback ${{ inputs.environment }}
+    runs-on: [self-hosted, kind]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Estado antes del rollback
+        run: |
+          export KUBECONFIG=$HOME/.kube/taskflow-config
+          kubectl -n ${{ inputs.environment }} get deploy,svc -l app=taskflow -o wide
+          PORT=8080; [ "${{ inputs.environment }}" = production ] && PORT=8081
+          curl -s "http://localhost:$PORT/version"
+      - name: Rollback blue/green
+        id: rb
+        run: scripts/rollback.sh "${{ inputs.environment }}"
+      - name: Smoke de verificación
+        run: scripts/smoke.sh "${{ inputs.environment }}" "${{ steps.rb.outputs.version }}"
+      - uses: ./.github/actions/notify
+        if: always()
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          status: warning
+          title: "TaskFlow: rollback MANUAL en ${{ inputs.environment }}"
+          message: "Ejecutado por @${{ github.actor }}. Motivo: ${{ inputs.reason }}. Versión restaurada: v${{ steps.rb.outputs.version }}"

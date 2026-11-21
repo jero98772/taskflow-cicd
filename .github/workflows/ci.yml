@@ -1,0 +1,270 @@
+name: CI
+
+# CI en todas las ramas y PRs. Release (imágenes en GHCR + tag semver) sólo en develop/main.
+# Después del release se encadena el CD (workflow reutilizable cd.yml).
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ───────────── 1. TEST ESTÁTICO (lint + SAST + IaC) ─────────────
+  static-analysis:
+    name: Static analysis (lint · SAST · IaC)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install tooling
+        run: |
+          pip install -r api/requirements-dev.txt
+          npm ci --prefix frontend
+
+      - name: Ruff (lint + format) – Python
+        working-directory: api
+        run: |
+          ruff check . ../tests/e2e --output-format=github
+          ruff format --check . ../tests/e2e
+
+      - name: Bandit (SAST) – Python
+        working-directory: api
+        run: bandit -r app -ll -f txt
+
+      - name: ESLint + HTMLHint – Frontend
+        run: npm run lint --prefix frontend
+
+      - name: Hadolint – Dockerfile API
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: api/Dockerfile
+      - name: Hadolint – Dockerfile Frontend
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: frontend/Dockerfile
+
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform fmt + validate
+        working-directory: infra/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Kubeconform – manifiestos Kubernetes
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          for env in staging production; do kubectl kustomize k8s/overlays/$env > /tmp/$env.yaml; done
+          COLOR=blue IMAGE=x VERSION=0.0.0 envsubst < k8s/bluegreen/api-deployment.tpl.yaml > /tmp/api.yaml
+          ./kubeconform -strict -summary /tmp/staging.yaml /tmp/production.yaml /tmp/api.yaml k8s/bluegreen/api-service.yaml
+
+  # ───────────── 2. TEST UNITARIO + COBERTURA ─────────────
+  unit-tests:
+    name: Unit tests + coverage (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [api, frontend]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - if: matrix.component == 'api'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: api/requirements-dev.txt
+      - if: matrix.component == 'api'
+        name: Pytest + coverage (umbral 80%)
+        working-directory: api
+        run: |
+          pip install -r requirements-dev.txt
+          pytest -v --cov --cov-report=term --cov-report=xml --cov-report=html --junitxml=junit.xml
+          echo "### Cobertura API" >> "$GITHUB_STEP_SUMMARY"
+          python -c "import xml.etree.ElementTree as E;r=E.parse('coverage.xml').getroot();print(f\"**{float(r.get('line-rate'))*100:.1f}%** de líneas cubiertas\")" >> "$GITHUB_STEP_SUMMARY"
+
+      - if: matrix.component == 'frontend'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - if: matrix.component == 'frontend'
+        name: node --test + c8 coverage (umbral 80%)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test | tee test-output.txt
+          { echo "### Cobertura Frontend"; echo '```'; grep -E '^\S+\s*\|' test-output.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.component }}
+          path: |
+            api/htmlcov
+            api/coverage.xml
+            api/junit.xml
+            frontend/coverage
+          if-no-files-found: ignore
+
+  # ───────────── 3. BUILD + ESCANEO DE SEGURIDAD DE IMÁGENES ─────────────
+  build:
+    name: Build & scan image (${{ matrix.component }})
+    needs: [static-analysis, unit-tests]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [api, frontend]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Docker build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.component }}
+          tags: taskflow-${{ matrix.component }}:ci
+          load: true
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+      - name: Trivy – escaneo de vulnerabilidades (falla con CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: taskflow-${{ matrix.component }}:ci
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+      - name: Trivy – reporte completo (HIGH/CRITICAL, informativo)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: taskflow-${{ matrix.component }}:ci
+          severity: HIGH,CRITICAL
+          format: table
+          output: trivy-${{ matrix.component }}.txt
+          exit-code: "0"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-${{ matrix.component }}
+          path: trivy-${{ matrix.component }}.txt
+      - name: Guardar imagen como artefacto
+        run: docker save taskflow-${{ matrix.component }}:ci | gzip > image-${{ matrix.component }}.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.component }}
+          path: image-${{ matrix.component }}.tar.gz
+          retention-days: 3
+
+  # ───────────── 4. RELEASE: versión semántica + publicación del artefacto ─────────────
+  release:
+    name: Release (semver + GHCR)
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # tags + GitHub Release
+      packages: write   # GHCR
+      issues: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      api_image: ${{ steps.version.outputs.api_image }}
+      frontend_image: ${{ steps.version.outputs.frontend_image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Semantic release (Conventional Commits)
+        id: semrel
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: conventional-changelog-conventionalcommits@8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calcular versión e imágenes
+        id: version
+        run: |
+          if [ "${{ steps.semrel.outputs.new_release_published }}" = "true" ]; then
+            VERSION="${{ steps.semrel.outputs.new_release_version }}"
+          else
+            # Sin commits feat/fix: build trazable al commit
+            LAST="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+            VERSION="${LAST:-0.0.0}-build.${GITHUB_SHA::7}"
+          fi
+          OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "version=$VERSION"
+            echo "api_image=$REGISTRY/$OWNER/taskflow-api:$VERSION"
+            echo "frontend_image=$REGISTRY/$OWNER/taskflow-frontend:$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "## 📦 Release \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publicar imágenes (artefacto desplegable)
+        run: |
+          for c in api frontend; do
+            docker load < image-$c.tar.gz
+          done
+          docker tag taskflow-api:ci "${{ steps.version.outputs.api_image }}"
+          docker tag taskflow-frontend:ci "${{ steps.version.outputs.frontend_image }}"
+          docker push "${{ steps.version.outputs.api_image }}"
+          docker push "${{ steps.version.outputs.frontend_image }}"
+          echo "- ${{ steps.version.outputs.api_image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- ${{ steps.version.outputs.frontend_image }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────── 5. CD (pipeline reutilizable) ─────────────
+  cd:
+    name: CD
+    needs: release
+    uses: ./.github/workflows/cd.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      api_image: ${{ needs.release.outputs.api_image }}
+      frontend_image: ${{ needs.release.outputs.frontend_image }}
+      deploy_production: ${{ github.ref == 'refs/heads/main' }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
