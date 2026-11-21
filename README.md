@@ -72,3 +72,18 @@ cd api && pip install -r requirements-dev.txt && ruff check . && bandit -r app &
 cd frontend && npm ci && npm run lint && npm test
 BASE_URL=http://localhost:8080 pytest tests/e2e
 ```
+
+## Guion de demo (sustentación, ~15 min)
+Repositorio: https://github.com/jero98772/taskflow-cicd · staging http://localhost:8080 · production http://localhost:8081
+
+1. **Runner arriba**: `cd ~/actions-runner-taskflow && ./run.sh` (debe verse *online* en Settings → Actions → Runners).
+2. **Cambio real**: rama `feature/x` desde `develop`, commit `feat: ...`, PR a `develop` → CI como gate.
+3. Merge → CI + pre-release `vX.Y.Z-rc.1` → CD despliega en **staging** (mostrar el color en la UI).
+4. PR `develop` → `main`, merge → release `vX.Y.Z` → staging → pre-prod → **aprobar** en *Review deployments*
+   → production Blue/Green → post-prod. Mostrar la GitHub Release y las imágenes en *Packages*.
+5. **Rollback automático**: Actions → CD → *Run workflow* con `simulate_failure = true` → ver el job
+   *Rollback automático production*.
+6. **Botón de pánico**: Actions → *Rollback manual* → production → la UI cambia de color al instante.
+
+Runs de evidencia ya ejecutados: CI+CD completo en `main` (v1.0.0 en ambos ambientes), rollback manual en
+staging, CD con fallo simulado y rollback automático en production, CI+CD de `develop` a staging.
