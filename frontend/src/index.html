@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskFlow</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>TaskFlow</h1>
+      <span id="version" class="env">…</span>
+    </header>
+    <form id="form">
+      <input id="title" placeholder="Nueva tarea…" maxlength="200" autocomplete="off">
+      <select id="priority">
+        <option value="high">Alta</option>
+        <option value="medium" selected>Media</option>
+        <option value="low">Baja</option>
+      </select>
+      <button type="submit">Agregar</button>
+    </form>
+    <p id="error" class="error"></p>
+    <nav>
+      <button data-filter="all" class="active">Todas</button>
+      <button data-filter="pending">Pendientes</button>
+      <button data-filter="done">Completadas</button>
+      <span id="progress"></span>
+    </nav>
+    <ul id="list"></ul>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
